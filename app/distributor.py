@@ -135,7 +135,7 @@ class LogDistributor:
         return selected_analyzer
     
     async def distribute_log_packet(self, packet: LogPacket) -> Dict[str, List[str]]:
-        """Distribute log packet to analyzers based on weight distribution"""
+        """Distribute individual messages from log packet to analyzers based on weight distribution"""
         if not self.http_client:
             raise RuntimeError("HTTP client not initialized")
         
@@ -151,41 +151,106 @@ class LogDistributor:
             logger.warning("No online analyzers available")
             return results
         
-        # Select analyzer based on weight
-        selected_analyzer = self.select_analyzer_by_weight()
-        if not selected_analyzer:
-            logger.error("Failed to select analyzer")
+        total_messages = len(packet.messages)
+        if total_messages == 0:
+            logger.warning("Empty log packet received")
             return results
         
-        # Send packet to selected analyzer
-        try:
-            response = await self.http_client.post(
-                selected_analyzer.endpoint,
-                json=packet.model_dump(),
-                headers={"Content-Type": "application/json"}
+        # Use fair distribution algorithm that tracks cumulative distribution
+        analyzer_distributions = self._fair_distribute_messages(online_analyzers, total_messages)
+        
+        # Create and send packets to each analyzer
+        message_index = 0
+        for analyzer, message_count in analyzer_distributions:
+            if message_count == 0:
+                continue
+                
+            # Extract messages for this analyzer
+            analyzer_messages = packet.messages[message_index:message_index + message_count]
+            message_index += message_count
+            
+            # Create a new packet for this analyzer
+            analyzer_packet = LogPacket(
+                source=packet.source,
+                messages=analyzer_messages
             )
-            response.raise_for_status()
             
-            # Update statistics
-            selected_analyzer.total_messages_processed += len(packet.messages)
-            self.distribution_stats["total_messages_distributed"] += len(packet.messages)
-            
-            results["success"].append(f"{selected_analyzer.name} ({selected_analyzer.id})")
-            results["analyzers_used"].append({
-                "id": selected_analyzer.id,
-                "name": selected_analyzer.name,
-                "weight": selected_analyzer.weight,
-                "messages_processed": len(packet.messages)
-            })
-            
-            logger.info(f"Successfully sent packet to analyzer {selected_analyzer.name}")
-            
-        except Exception as e:
-            results["failed"].append(f"{selected_analyzer.name}: {str(e)}")
-            self.distribution_stats["failed_distributions"] += 1
-            logger.error(f"Failed to send to analyzer {selected_analyzer.name}: {e}")
+            try:
+                # Send to analyzer
+                response = await self.http_client.post(
+                    analyzer.endpoint,
+                    json=analyzer_packet.model_dump(),
+                    timeout=10.0
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"Successfully sent {len(analyzer_messages)} messages to {analyzer.name}")
+                    results["success"].append(f"{analyzer.name}: {len(analyzer_messages)} messages")
+                    results["analyzers_used"].append(analyzer.id)
+                    
+                    # Update analyzer stats
+                    analyzer.stats.packets_processed += 1
+                    analyzer.stats.messages_processed += len(analyzer_messages)
+                else:
+                    logger.error(f"Failed to send to {analyzer.name}: HTTP {response.status_code}")
+                    results["failed"].append(f"{analyzer.name}: HTTP {response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Error sending to {analyzer.name}: {str(e)}")
+                results["failed"].append(f"{analyzer.name}: {str(e)}")
         
         return results
+    
+    def _fair_distribute_messages(self, analyzers: List[Analyzer], total_messages: int) -> List[tuple]:
+        """
+        Accurate weight-based distribution that minimizes bias.
+        Uses a simple but effective algorithm to ensure proper weight adherence.
+        """
+        if not analyzers:
+            return []
+        
+        # Calculate target messages for each analyzer
+        target_distributions = []
+        total_target = 0.0
+        
+        for analyzer in analyzers:
+            normalized_weight = self.analyzer_config.get_normalized_weight(analyzer)
+            target_messages = normalized_weight * total_messages
+            target_distributions.append((analyzer, target_messages))
+            total_target += target_messages
+        
+        # First pass: assign integer parts
+        distributions = []
+        remaining_messages = total_messages
+        fractional_parts = []
+        
+        for analyzer, target_messages in target_distributions:
+            integer_part = int(target_messages)
+            fractional_part = target_messages - integer_part
+            
+            # Ensure we don't assign more than available
+            actual_assignment = min(integer_part, remaining_messages)
+            distributions.append((analyzer, actual_assignment))
+            remaining_messages -= actual_assignment
+            
+            # Store fractional part for second pass
+            fractional_parts.append((len(distributions) - 1, fractional_part))
+        
+        # Second pass: distribute remaining messages based on fractional parts
+        if remaining_messages > 0:
+            # Sort by fractional part (descending) to prioritize analyzers with higher fractional parts
+            fractional_parts.sort(key=lambda x: x[1], reverse=True)
+            
+            for idx, fractional_part in fractional_parts:
+                if remaining_messages <= 0:
+                    break
+                
+                # Give one message to this analyzer if it has the highest fractional part
+                analyzer, current_count = distributions[idx]
+                distributions[idx] = (analyzer, current_count + 1)
+                remaining_messages -= 1
+        
+        return distributions
     
     async def process_log_packet(self, packet_data: dict) -> Dict[str, any]:
         """Process a log packet from queue: distribute to analyzers"""

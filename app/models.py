@@ -2,6 +2,10 @@ from pydantic import BaseModel
 from typing import List, Optional
 from enum import Enum
 
+class AnalyzerStats(BaseModel):
+    packets_processed: int = 0
+    messages_processed: int = 0
+
 class LogMessage(BaseModel):
     timestamp: str  # ISO8601 or similar
     level: str      # Simple string, no enum validation needed
@@ -20,13 +24,19 @@ class Analyzer(BaseModel):
     id: str
     name: str
     endpoint: str
-    weight: float  # Relative weight (0.0 to 1.0)
+    weight: float  # Original weight (not normalized)
     status: AnalyzerStatus = AnalyzerStatus.ONLINE
     health_check_url: Optional[str] = None
     last_health_check: Optional[str] = None
     total_messages_processed: int = 0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    stats: AnalyzerStats = AnalyzerStats()
+    
+    @property
+    def normalized_weight(self) -> float:
+        """Get normalized weight (0.0 to 1.0) based on online analyzers"""
+        return self.weight  # Will be normalized by AnalyzerConfig
 
 class AnalyzerConfig(BaseModel):
     analyzers: List[Analyzer]
@@ -51,11 +61,14 @@ class AnalyzerConfig(BaseModel):
         online_analyzers = self.get_online_analyzers()
         if online_analyzers:
             total_weight = sum(a.weight for a in online_analyzers)
-            # Normalize weights to sum to 1.0
-            for analyzer in online_analyzers:
-                analyzer.weight = analyzer.weight / total_weight
-            self.total_weight = 1.0
+            self.total_weight = total_weight
         else:
             self.total_weight = 0.0
+    
+    def get_normalized_weight(self, analyzer: Analyzer) -> float:
+        """Get normalized weight for an analyzer (0.0 to 1.0)"""
+        if self.total_weight > 0:
+            return analyzer.weight / self.total_weight
+        return 0.0
 
 
