@@ -158,9 +158,14 @@ class LogDistributor:
         
         # Use fair distribution algorithm that tracks cumulative distribution
         analyzer_distributions = self._fair_distribute_messages(online_analyzers, total_messages)
-        
+
+        # DEBUG: Log the planned distribution
+        logger.info(f"Planned analyzer distribution: " + ", ".join([f"{a.name}: {count}" for a, count in analyzer_distributions]))
+
         # Create and send packets to each analyzer
         message_index = 0
+        packets_sent = 0  # Track total packets sent across all analyzers
+        
         for analyzer, message_count in analyzer_distributions:
             if message_count == 0:
                 continue
@@ -188,8 +193,8 @@ class LogDistributor:
                     results["success"].append(f"{analyzer.name}: {len(analyzer_messages)} messages")
                     results["analyzers_used"].append(analyzer.id)
                     
-                    # Update analyzer stats
-                    analyzer.stats.packets_processed += 1
+                    # Update analyzer stats - only increment packets_processed once per original packet
+                    packets_sent += 1
                     analyzer.stats.messages_processed += len(analyzer_messages)
                 else:
                     logger.error(f"Failed to send to {analyzer.name}: HTTP {response.status_code}")
@@ -199,56 +204,71 @@ class LogDistributor:
                 logger.error(f"Error sending to {analyzer.name}: {str(e)}")
                 results["failed"].append(f"{analyzer.name}: {str(e)}")
         
+        # Update packets_processed only once per original packet, distributed proportionally
+        if packets_sent > 0:
+            for analyzer in online_analyzers:
+                if analyzer.id in results["analyzers_used"]:
+                    # Distribute the packet count proportionally based on weight
+                    normalized_weight = self.analyzer_config.get_normalized_weight(analyzer)
+                    analyzer.stats.packets_processed += normalized_weight
+        
         return results
     
     def _fair_distribute_messages(self, analyzers: List[Analyzer], total_messages: int) -> List[tuple]:
         """
-        Accurate weight-based distribution that minimizes bias.
-        Uses a simple but effective algorithm to ensure proper weight adherence.
+        Fair weight-based distribution that tracks cumulative distribution to ensure fairness over time.
+        Uses a cumulative tracking approach to minimize bias.
         """
         if not analyzers:
             return []
         
+        # Initialize cumulative distribution tracking if not exists
+        if not hasattr(self, '_cumulative_distribution'):
+            self._cumulative_distribution = {analyzer.id: 0.0 for analyzer in analyzers}
+        
         # Calculate target messages for each analyzer
         target_distributions = []
-        total_target = 0.0
-        
         for analyzer in analyzers:
             normalized_weight = self.analyzer_config.get_normalized_weight(analyzer)
             target_messages = normalized_weight * total_messages
             target_distributions.append((analyzer, target_messages))
-            total_target += target_messages
         
-        # First pass: assign integer parts
-        distributions = []
-        remaining_messages = total_messages
-        fractional_parts = []
+        # DEBUG: Log target calculations
+        logger.info(f"DEBUG: Total messages={total_messages}, targets: " + ", ".join([f"{a.name}={t:.3f}" for a, t in target_distributions]))
         
-        for analyzer, target_messages in target_distributions:
-            integer_part = int(target_messages)
-            fractional_part = target_messages - integer_part
-            
-            # Ensure we don't assign more than available
-            actual_assignment = min(integer_part, remaining_messages)
-            distributions.append((analyzer, actual_assignment))
-            remaining_messages -= actual_assignment
-            
-            # Store fractional part for second pass
-            fractional_parts.append((len(distributions) - 1, fractional_part))
+        # Distribute messages using cumulative tracking
+        distributions = [(analyzer, 0) for analyzer, _ in target_distributions]
         
-        # Second pass: distribute remaining messages based on fractional parts
-        if remaining_messages > 0:
-            # Sort by fractional part (descending) to prioritize analyzers with higher fractional parts
-            fractional_parts.sort(key=lambda x: x[1], reverse=True)
+        for message_idx in range(total_messages):
+            # Find analyzer with lowest cumulative distribution relative to target
+            best_analyzer_idx = 0
+            best_ratio = float('inf')
             
-            for idx, fractional_part in fractional_parts:
-                if remaining_messages <= 0:
-                    break
+            for idx, (analyzer, target_messages) in enumerate(target_distributions):
+                if target_messages <= 0:
+                    continue
+                    
+                current_count = distributions[idx][1]
+                cumulative = self._cumulative_distribution[analyzer.id]
                 
-                # Give one message to this analyzer if it has the highest fractional part
-                analyzer, current_count = distributions[idx]
-                distributions[idx] = (analyzer, current_count + 1)
-                remaining_messages -= 1
+                # Calculate how far behind this analyzer is from its target
+                target_ratio = (cumulative + current_count) / target_messages
+                
+                if target_ratio < best_ratio:
+                    best_ratio = target_ratio
+                    best_analyzer_idx = idx
+            
+            # Assign message to best analyzer
+            analyzer, current_count = distributions[best_analyzer_idx]
+            distributions[best_analyzer_idx] = (analyzer, current_count + 1)
+            
+            # Update cumulative distribution
+            self._cumulative_distribution[analyzer.id] += 1
+            
+            logger.info(f"DEBUG: Message {message_idx + 1} assigned to {analyzer.name}, cumulative={self._cumulative_distribution[analyzer.id]:.2f}")
+        
+        # DEBUG: Log final distribution
+        logger.info(f"DEBUG: Final distribution: " + ", ".join([f"{a.name}={count}" for a, count in distributions]))
         
         return distributions
     

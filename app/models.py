@@ -44,7 +44,21 @@ class AnalyzerConfig(BaseModel):
     
     def add_analyzer(self, analyzer: Analyzer):
         """Add analyzer and recalculate total weight"""
-        self.analyzers.append(analyzer)
+        # Check if analyzer already exists by ID
+        existing_analyzer = next((a for a in self.analyzers if a.id == analyzer.id), None)
+        if existing_analyzer:
+            # Update existing analyzer with new data
+            existing_analyzer.name = analyzer.name
+            existing_analyzer.endpoint = analyzer.endpoint
+            existing_analyzer.weight = analyzer.weight
+            existing_analyzer.health_check_url = analyzer.health_check_url
+            existing_analyzer.status = analyzer.status
+            existing_analyzer.updated_at = analyzer.updated_at
+            # Don't update stats as they should be preserved
+        else:
+            # Add new analyzer
+            self.analyzers.append(analyzer)
+        
         self._recalculate_weights()
     
     def remove_analyzer(self, analyzer_id: str):
