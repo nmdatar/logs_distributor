@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+redis
+httpx
+pydantic 

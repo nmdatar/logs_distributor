@@ -1,0 +1,75 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  ingestor:
+    build: .
+    command: python scripts/start_ingestor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+
+  distributor:
+    build: .
+    command: python scripts/start_distributor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    ports:
+      - "8001:8001"
+
+  # Service to register analyzers with distributor
+  register-analyzers:
+    build: .
+    command: python scripts/register_analyzers.py
+    depends_on:
+      - distributor
+      - analyzer1
+      - analyzer2
+      - analyzer3
+    restart: "no"
+
+  analyzer1:
+    build: .
+    command: python scripts/start_analyzer_stub.py --id analyzer1 --name analyzer1 --port 9001
+    depends_on:
+      - distributor
+    ports:
+      - "9001:9001"
+
+  analyzer2:
+    build: .
+    command: python scripts/start_analyzer_stub.py --id analyzer2 --name analyzer2 --port 9002
+    depends_on:
+      - distributor
+    ports:
+      - "9002:9002"
+
+  analyzer3:
+    build: .
+    command: python scripts/start_analyzer_stub.py --id analyzer3 --name analyzer3 --port 9003
+    depends_on:
+      - distributor
+    ports:
+      - "9003:9003"
+
+  jmeter:
+    image: justb4/jmeter
+    depends_on:
+      - ingestor
+      - distributor
+      - analyzer1
+      - analyzer2
+      - analyzer3
+    command: -n -t /testplans/load_test_scalable.jmx -Jserver=ingestor -Jport=8000 -Jpath=/logs -Jthreads=2 -Jloops=5 -Jramp_time=2
+    volumes:
+      - ./tests/jmeter:/testplans
+      - ./results:/results
+    restart: "no" 
