@@ -1,0 +1,143 @@
+version: '3.8'
+services:
+  # Load Balancer
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - ingestor-1
+      - ingestor-2
+      - ingestor-3
+    restart: unless-stopped
+
+  # Multiple Ingestors
+  ingestor-1:
+    build: .
+    command: python scripts/start_ingestor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - INGESTOR_ID=ingestor-1
+      - INGESTOR_PORT=8000
+    ports:
+      - "8001:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  ingestor-2:
+    build: .
+    command: python scripts/start_ingestor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - INGESTOR_ID=ingestor-2
+      - INGESTOR_PORT=8000
+    ports:
+      - "8002:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  ingestor-3:
+    build: .
+    command: python scripts/start_ingestor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - INGESTOR_ID=ingestor-3
+      - INGESTOR_PORT=8000
+    ports:
+      - "8003:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Single Redis (for now)
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # Multiple Distributors
+  distributor-1:
+    build: .
+    command: python scripts/start_distributor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DISTRIBUTOR_ID=distributor-1
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  distributor-2:
+    build: .
+    command: python scripts/start_distributor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DISTRIBUTOR_ID=distributor-2
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  distributor-3:
+    build: .
+    command: python scripts/start_distributor.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DISTRIBUTOR_ID=distributor-3
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Register analyzers with all distributors
+  register-analyzers:
+    build: .
+    command: python scripts/register_analyzers_multi.py
+    depends_on:
+      - distributor-1
+      - distributor-2
+      - distributor-3
+      - analyzer1
+      - analyzer2
+      - analyzer3
+    restart: "no"
+
+  analyzer1:
+    build: .
+    command: python scripts/start_analyzer_stub.py --id analyzer1 --name analyzer1 --port 9001
+    ports:
+      - "9001:9001"
+    restart: unless-stopped
+
+  analyzer2:
+    build: .
+    command: python scripts/start_analyzer_stub.py --id analyzer2 --name analyzer2 --port 9002
+    ports:
+      - "9002:9002"
+    restart: unless-stopped
+
+  analyzer3:
+    build: .
+    command: python scripts/start_analyzer_stub.py --id analyzer3 --name analyzer3 --port 9003
+    ports:
+      - "9003:9003"
+    restart: unless-stopped
+
+  # JMeter load testing
+  jmeter:
+    image: justb4/jmeter
+    depends_on:
+      - nginx
+      - distributor-1
+      - distributor-2
+      - distributor-3
+      - analyzer1
+      - analyzer2
+      - analyzer3
+    command: -n -t /testplans/load_test_scalable.jmx -Jserver=ingestor -Jport=80 -Jpath=/logs -Jthreads=2 -Jloops=5 -Jramp_time=2
+    volumes:
+      - ./tests/jmeter:/testplans
+      - ./results:/results
+    restart: "no" 

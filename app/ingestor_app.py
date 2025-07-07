@@ -55,6 +55,10 @@ async def ingest_logs(packet: LogPacket):
     Ingest log packets and store them in Redis queue
     """
     try:
+        # Log which ingestor instance received this request
+        ingestor_id = os.getenv("INGESTOR_ID", "unknown")
+        logger.info(f"[{ingestor_id}] Received log packet from {packet.source} with {len(packet.messages)} messages")
+        
         result = await ingestor.ingest_log_packet(packet)
         
         if result["status"] == "error":
@@ -62,6 +66,7 @@ async def ingest_logs(packet: LogPacket):
         
         return {
             "message": "Log packet ingested successfully",
+            "ingestor_id": ingestor_id,
             "storage_key": result["storage_key"],
             "queue_length": result["queue_length"],
             "ingested_at": result["ingested_at"]
