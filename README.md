@@ -1,28 +1,15 @@
 # Logs Distributor
 
-A high-performance log distribution system built with FastAPI, Redis, and async HTTP clients. The system consists of three main components:
-
-1. **Logs Ingestor** - Accepts log packets from emitters and stores them in Redis queue
-2. **Logs Distributor** - Reads from Redis queue and distributes logs to analyzers based on weights
-3. **Analyzers** - HTTP endpoints that receive and process log packets
-
-## Features
-
-- **Async Log Processing**: High-performance asynchronous log processing
-- **Redis Storage**: Persistent storage of log packets with configurable TTL
-- **Weight-based Distribution**: Route logs to analyzers based on configurable weights
-- **Health Monitoring**: Built-in health checks for analyzers with automatic status updates
-- **HTTP API**: RESTful API for submitting logs and managing analyzers
-- **CORS Support**: Cross-origin resource sharing enabled
-- **Configurable**: Environment-based configuration
+A high-performance log distribution system built with FastAPI, Redis, and async HTTP clients. The system distributes log packets to multiple analyzers based on configurable weights.
 
 ## Architecture
 
+### Basic Architecture
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
-│   Log       │───▶│   Logs       │───▶│   Redis     │───▶│   Logs       │
-│  Emitters   │    │  Ingestor    │    │   Queue     │    │ Distributor  │
-│             │    │  (Port 8000) │    │             │    │ (Port 8001)  │
+│   JMeter    │───▶│   Logs       │───▶│   Redis     │───▶│   Logs       │
+│   Load      │    │  Ingestor    │    │   Queue     │    │ Distributor  │
+│  Generator  │    │  (Port 8000) │    │             │    │ (Port 8001)  │
 └─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
                                                                     │
                                                                     ▼
@@ -32,68 +19,172 @@ A high-performance log distribution system built with FastAPI, Redis, and async 
                                                            └──────────────┘
 ```
 
-### Service Separation Benefits:
-- **Scalability**: Each service can be scaled independently
-- **Fault Tolerance**: If one service fails, the other continues working
-- **Load Distribution**: Ingestor handles high-volume ingestion, Distributor handles routing
-- **Flexibility**: Different deployment strategies for each service
-- **Weight-based Routing**: Distribute load across analyzers based on their capacity
-
-## Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd logs_distributor
-   ```
-
-2. **Create and activate virtual environment**:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Start Redis** (make sure Redis is running):
-   ```bash
-   # On macOS with Homebrew
-   brew services start redis
-   
-   # On Ubuntu/Debian
-   sudo systemctl start redis
-   
-   # Or run Redis in Docker
-   docker run -d -p 6379:6379 redis:alpine
-   ```
-
-## Usage
-
-### Starting the Services
-
-#### Start Ingestor (Port 8000):
-```bash
-source venv/bin/activate && PYTHONPATH=. python scripts/start_ingestor.py
+### Load Balanced Architecture
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   JMeter    │───▶│   Nginx     │───▶│  Ingestors  │───▶│   Redis     │
+│   Load      │    │   Load      │    │ (3x Port    │    │   Queue     │
+│  Generator  │    │  Balancer   │    │  8001-8003) │    │             │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                                                                    │
+                                                                    ▼
+                                                           ┌─────────────┐
+                                                           │Distributors │
+                                                           │(3x Port     │
+                                                           │ 8001-8003)  │
+                                                                    │
+                                                                    ▼
+                                                           ┌─────────────┐
+                                                           │   Analyzers │
+                                                           │ (Port 9001+)│
+                                                           └─────────────┘
 ```
 
-#### Start Distributor (Port 8001):
-```bash
-source venv/bin/activate && PYTHONPATH=. python scripts/start_distributor.py
+## Project Structure
+
+```
+logs_distributor/
+├── app/                          # Main application code
+│   ├── __init__.py
+│   ├── models.py                 # Data models (LogPacket, Analyzer, etc.)
+│   ├── ingestor.py               # Log ingestion logic
+│   ├── distributor.py            # Log distribution logic
+│   ├── analyzer_stub.py          # Analyzer stub implementation
+│   ├── ingestor_app.py           # Ingestor FastAPI application
+│   ├── distributor_app.py        # Distributor FastAPI application
+│   └── main.py                   # Main entry point
+├── scripts/                      # Utility scripts
+│   ├── start_ingestor.py         # Start ingestor service
+│   ├── start_distributor.py      # Start distributor service
+│   ├── start_analyzer_stub.py    # Start analyzer stub
+│   ├── register_analyzers.py     # Register analyzers with distributor
+│   ├── monitor_service.py        # Monitor service health
+│   └── manage_analyzers.py       # Manage analyzer registration
+├── tests/                        # Test files and data
+│   ├── jmeter/                   # JMeter test plans
+│   │   ├── load_test.jmx         # Basic load test
+│   │   └── load_test_scalable.jmx # Scalable load test
+│   └── scripts/                  # Test scripts
+│       ├── load_test_simple.py   # Simple Python load test
+│       └── test_weight_accuracy.py # Test weight distribution accuracy
+├── results/                      # JMeter test results
+├── docker-compose.yml            # Docker Compose configuration
+├── docker-compose.final.yml      # Scaled Docker compose configuration
+├── nginx.conf                    # Load balancing config
+├── Dockerfile                    # Docker image definition
+├── requirements.txt              # Python dependencies
+├── run.py                        # Alternative entry point
+└── README.md                     # This file
 ```
 
-#### Start Analyzer Stubs (for testing):
-```bash
-# Start analyzer 1 (Port 9001)
-source venv/bin/activate && PYTHONPATH=. python scripts/start_analyzer_stub.py --id analyzer1 --name analyzer1 --port 9001
+## Quick Start with Docker Compose
 
-# Start analyzer 2 (Port 9002)
-source venv/bin/activate && PYTHONPATH=. python scripts/start_analyzer_stub.py --id analyzer2 --name analyzer2 --port 9002
+The system provides two Docker Compose configurations for different scaling needs:
+
+### Basic Setup (Single Instance)
+```bash
+docker-compose up -d
 ```
 
-#### Start All Services (Development):
+This starts:
+- **Redis** (port 6379)
+- **Ingestor** (port 8000)
+- **Distributor** (port 8001)
+- **3 Analyzers** (ports 9001, 9002, 9003)
+- **JMeter** (load generator)
+
+### Load Balanced Setup (Horizontal Scaling)
+```bash
+docker-compose -f docker-compose.final.yml up -d
+```
+
+This starts:
+- **Nginx Load Balancer** (port 80)
+- **3 Ingestors** (ports 8001, 8002, 8003)
+- **3 Distributors** (reading from same Redis queue)
+- **Redis** (port 6379)
+- **3 Analyzers** (ports 9001, 9002, 9003)
+- **JMeter** (load generator)
+
+**Load Balancing Features:**
+- Round-robin distribution across ingestor instances
+- Health checks and automatic failover
+- Rate limiting and connection pooling
+- Multiple distributors for parallel processing
+
+### 2. Register Analyzers
+```bash
+# For basic setup
+docker-compose exec distributor python scripts/register_analyzers.py
+
+# For load balanced setup
+docker-compose -f docker-compose.final.yml exec distributor-1 python scripts/register_analyzers_multi.py
+```
+
+### 3. Run Load Test
+```bash
+# Basic setup - Run JMeter test directly
+docker-compose exec jmeter jmeter -n -t /tests/jmeter/load_test_scalable.jmx -l /results/results.jtl
+
+# Load balanced setup - Run JMeter test
+docker-compose -f docker-compose.final.yml exec jmeter jmeter -n -t /tests/jmeter/load_test_scalable.jmx -l /results/results.jtl
+
+# Or use the shell script for different load scenarios
+./scripts/run_load_test.sh light    # Light load
+./scripts/run_load_test.sh medium   # Medium load
+./scripts/run_load_test.sh heavy    # Heavy load
+./scripts/run_load_test.sh stress   # Stress test
+```
+
+### 4. Check Results
+```bash
+# Basic setup - Check distributor stats
+curl http://localhost:8001/analyzers/stats
+
+# Load balanced setup - Check load balancer status
+curl http://localhost/nginx_status
+
+# Check individual analyzer stats
+curl http://localhost:9001/stats
+curl http://localhost:9002/stats
+curl http://localhost:9003/stats
+
+# View JMeter results
+open results/index.html  # macOS
+# or manually open results/index.html in your browser
+```
+
+### 5. Stop Services
+```bash
+# Basic setup
+docker-compose down
+
+# Load balanced setup
+docker-compose -f docker-compose.final.yml down
+```
+
+## Manual Setup (Without Docker)
+
+### Prerequisites
+- Python 3.8+
+- Redis server
+
+### 1. Setup Environment
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start Redis (if not already running)
+# macOS: brew services start redis
+# Ubuntu: sudo systemctl start redis
+# Or: docker run -d -p 6379:6379 redis:alpine
+```
+
+### 2. Start Services
 ```bash
 # Terminal 1 - Ingestor
 source venv/bin/activate && PYTHONPATH=. python scripts/start_ingestor.py
@@ -108,282 +199,93 @@ source venv/bin/activate && PYTHONPATH=. python scripts/start_analyzer_stub.py -
 source venv/bin/activate && PYTHONPATH=. python scripts/start_analyzer_stub.py --id analyzer2 --name analyzer2 --port 9002
 ```
 
-### Environment Variables
-
-#### Ingestor Service:
-- `INGESTOR_HOST`: Server host (default: `0.0.0.0`)
-- `INGESTOR_PORT`: Server port (default: `8000`)
-- `INGESTOR_RELOAD`: Enable auto-reload for development (default: `false`)
-
-#### Distributor Service:
-- `DISTRIBUTOR_HOST`: Server host (default: `0.0.0.0`)
-- `DISTRIBUTOR_PORT`: Server port (default: `8001`)
-- `DISTRIBUTOR_RELOAD`: Enable auto-reload for development (default: `false`)
-
-#### Shared:
-- `REDIS_URL`: Redis connection URL (default: `redis://localhost:6379`)
-- `LOG_QUEUE_NAME`: Redis queue name (default: `log_queue`)
-- `HTTP_TIMEOUT`: HTTP request timeout in seconds (default: `30`)
-
-### API Endpoints
-
-#### Ingestor Service (Port 8000)
-
-##### Submit Logs
-```http
-POST /logs
-Content-Type: application/json
-
-{
-  "source": "my-application",
-  "messages": [
-    {
-      "timestamp": "2024-01-15T10:30:00Z",
-      "level": "INFO",
-      "message": "Application started"
-    },
-    {
-      "timestamp": "2024-01-15T10:30:01Z",
-      "level": "ERROR",
-      "message": "Database connection failed"
-    }
-  ]
-}
-```
-
-##### Retrieve Stored Logs
-```http
-GET /logs?source={source}&limit={limit}
-
-# Example: Get logs from specific source
-GET /logs?source=my-application&limit=50
-```
-
-##### Queue Status
-```http
-GET /queue/status
-```
-
-##### Health Check
-```http
-GET /health
-```
-
-#### Distributor Service (Port 8001)
-
-##### Add Analyzer
-```http
-POST /analyzers
-Content-Type: application/json
-
-{
-  "id": "analyzer1",
-  "name": "Primary Analyzer",
-  "endpoint": "http://localhost:9001/analyze",
-  "weight": 3,
-  "health_check_url": "http://localhost:9001/health"
-}
-```
-
-##### Remove Analyzer
-```http
-DELETE /analyzers/{analyzer_id}
-
-# Example: Remove analyzer1
-DELETE /analyzers/analyzer1
-```
-
-##### Get Current Analyzers
-```http
-GET /analyzers
-```
-
-##### Get Distribution Statistics
-```http
-GET /analyzers/stats
-```
-
-##### Queue Status
-```http
-GET /queue/status
-```
-
-##### Health Check
-```http
-GET /health
-```
-
-#### Analyzer Stub Endpoints (Port 9001+)
-
-##### Health Check
-```http
-GET /health
-```
-
-##### Receive Log Packets
-```http
-POST /analyze
-Content-Type: application/json
-
-{
-  "source": "my-application",
-  "messages": [...]
-}
-```
-
-##### Get Statistics
-```http
-GET /stats
-```
-
-### Testing
-
-Run the test script to verify the complete system:
-
+### 3. Register Analyzers
 ```bash
-source venv/bin/activate && PYTHONPATH=. python scripts/test_weight_distribution.py
+source venv/bin/activate && PYTHONPATH=. python scripts/register_analyzers.py
 ```
 
-**Prerequisites**: 
-- Redis must be running
-- Ingestor (port 8000) and Distributor (port 8001) services must be running
-- At least one analyzer stub should be running
-
-### Example Workflow
-
-1. **Start all services** (see above)
-
-2. **Add analyzers to the distributor**:
+### 4. Run Tests
 ```bash
-# Add analyzer 1 (60% weight)
-curl -X POST http://localhost:8001/analyzers \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "analyzer1",
-    "name": "Analyzer 1",
-    "endpoint": "http://localhost:9001/analyze",
-    "weight": 3,
-    "health_check_url": "http://localhost:9001/health"
-  }'
+# Simple Python load test
+source venv/bin/activate && PYTHONPATH=. python tests/scripts/load_test_simple.py
 
-# Add analyzer 2 (40% weight)
-curl -X POST http://localhost:8001/analyzers \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "analyzer2",
-    "name": "Analyzer 2",
-    "endpoint": "http://localhost:9002/analyze",
-    "weight": 2,
-    "health_check_url": "http://localhost:9002/health"
-  }'
+# Test weight distribution accuracy
+source venv/bin/activate && PYTHONPATH=. python tests/scripts/test_weight_accuracy.py
 ```
 
-3. **Send log packets**:
+## Load Testing
+
+### JMeter Tests
+The project includes JMeter test plans for performance testing:
+
+- **`tests/jmeter/load_test.jmx`** - Basic load test
+- **`tests/jmeter/load_test_scalable.jmx`** - Scalable test with configurable parameters
+
+#### Running JMeter Tests
+```bash
+# Using Docker Compose (recommended)
+docker-compose exec jmeter jmeter -n -t /tests/jmeter/load_test_scalable.jmx -l /results/results.jtl
+
+# Using shell script for different scenarios
+./scripts/run_load_test.sh light    # 10 users, 10 seconds
+./scripts/run_load_test.sh medium   # 50 users, 30 seconds
+./scripts/run_load_test.sh heavy    # 100 users, 60 seconds
+./scripts/run_load_test.sh stress   # 200 users, 120 seconds
+```
+
+### Python Load Tests
+For simpler testing, use the Python load test script:
+```bash
+source venv/bin/activate && PYTHONPATH=. python tests/scripts/load_test_simple.py
+```
+
+## API Endpoints
+
+### Ingestor (Port 8000)
+- `POST /logs` - Submit log packets
+- `GET /logs` - Retrieve stored logs
+- `GET /queue/status` - Queue status
+- `GET /health` - Health check
+
+### Distributor (Port 8001)
+- `POST /analyzers` - Add analyzer
+- `DELETE /analyzers/{id}` - Remove analyzer
+- `GET /analyzers` - List analyzers
+- `GET /analyzers/stats` - Distribution statistics
+- `GET /queue/status` - Queue status
+- `GET /health` - Health check
+
+### Analyzers (Port 9001+)
+- `POST /analyze` - Receive log packets
+- `GET /stats` - Processing statistics
+- `GET /health` - Health check
+
+## Example Usage
+
+### Submit Logs
 ```bash
 curl -X POST http://localhost:8000/logs \
   -H "Content-Type: application/json" \
   -d '{
-    "source": "test_client",
+    "source": "my-app",
     "messages": [
       {
         "timestamp": "2024-01-15T10:30:00Z",
         "level": "INFO",
-        "message": "Test log message"
+        "message": "Application started"
+      },
+      {
+        "timestamp": "2024-01-15T10:30:01Z",
+        "level": "ERROR",
+        "message": "Database connection failed"
       }
     ]
   }'
 ```
 
-4. **Check distribution statistics**:
+### Add Analyzer
 ```bash
-curl http://localhost:8001/analyzers/stats
-```
-
-5. **Check analyzer statistics**:
-```bash
-curl http://localhost:9001/stats
-curl http://localhost:9002/stats
-```
-
-### Additional Scripts
-
-The `scripts/` directory contains several utility scripts:
-
-- **`start_analyzer_stub.py`**: Start analyzer stub for testing
-- **`test_weight_distribution.py`**: Test weight-based distribution
-- **`load_test.py`**: Performance testing with concurrent requests
-- **`monitor_service.py`**: Continuous service monitoring
-
-For detailed information about all available scripts, see `scripts/README.md`.
-
-## Data Models
-
-### LogMessage
-```python
-class LogMessage(BaseModel):
-    timestamp: str  # ISO8601 format
-    level: str      # INFO, WARNING, ERROR, DEBUG, CRITICAL
-    message: str
-```
-
-### LogPacket
-```python
-class LogPacket(BaseModel):
-    source: str
-    messages: List[LogMessage]
-```
-
-### Analyzer
-```python
-class Analyzer(BaseModel):
-    id: str
-    name: str
-    endpoint: str
-    weight: int
-    status: AnalyzerStatus = AnalyzerStatus.OFFLINE
-    health_check_url: str
-    total_messages_processed: int = 0
-```
-
-## Example Usage
-
-### Python Client
-```python
-import httpx
-from datetime import datetime
-
-async def send_logs():
-    async with httpx.AsyncClient() as client:
-        # Add analyzer
-        analyzer_data = {
-            "id": "analyzer1",
-            "name": "Primary Analyzer",
-            "endpoint": "http://localhost:9001/analyze",
-            "weight": 3,
-            "health_check_url": "http://localhost:9001/health"
-        }
-        await client.post("http://localhost:8001/analyzers", json=analyzer_data)
-        
-        # Send logs
-        log_data = {
-            "source": "my-app",
-            "messages": [
-                {
-                    "timestamp": datetime.now().isoformat(),
-                    "level": "ERROR",
-                    "message": "Something went wrong"
-                }
-            ]
-        }
-        
-        response = await client.post("http://localhost:8000/logs", json=log_data)
-        print(response.json())
-```
-
-### cURL Example
-```bash
-# Add analyzer
-curl -X POST "http://localhost:8001/analyzers" \
+curl -X POST http://localhost:8001/analyzers \
   -H "Content-Type: application/json" \
   -d '{
     "id": "analyzer1",
@@ -392,91 +294,81 @@ curl -X POST "http://localhost:8001/analyzers" \
     "weight": 3,
     "health_check_url": "http://localhost:9001/health"
   }'
+```
 
-# Send logs
-curl -X POST "http://localhost:8000/logs" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source": "my-app",
-    "messages": [
-      {
-        "timestamp": "2024-01-15T10:30:00Z",
-        "level": "ERROR",
-        "message": "Database connection failed"
-      }
-    ]
-  }'
+### Check Statistics
+```bash
+# Distributor stats
+curl http://localhost:8001/analyzers/stats
+
+# Individual analyzer stats
+curl http://localhost:9001/stats
+```
+
+## Configuration
+
+### Environment Variables
+- `REDIS_URL` - Redis connection URL (default: `redis://localhost:6379`)
+- `LOG_QUEUE_NAME` - Redis queue name (default: `log_queue`)
+- `HTTP_TIMEOUT` - HTTP request timeout (default: `30`)
+
+### Docker Compose Configuration
+
+**`docker-compose.yml`** - Basic single-instance setup:
+- Service ports and networking
+- Volume mounts for test data and results
+- Environment variables
+- Service dependencies and restart policies
+
+**`docker-compose.final.yml`** - Load balanced horizontal scaling:
+- Nginx load balancer with health checks
+- Multiple ingestor and distributor instances
+- Round-robin distribution and failover
+- Rate limiting and connection pooling
+
+## Troubleshooting
+
+### Common Issues
+
+1. **JMeter container fails to start**
+   - Check if the results directory is empty
+   - Reduce load parameters in the test plan
+
+2. **Analyzers not receiving logs**
+   - Ensure analyzers are registered with the distributor
+   - Check analyzer health status
+   - Verify network connectivity between services
+
+3. **Redis connection errors**
+   - Ensure Redis is running and accessible
+   - Check Redis URL configuration
+
+4. **Port conflicts**
+   - Verify no other services are using the required ports
+   - Modify port mappings in docker-compose.yml if needed
+
+### Debugging
+```bash
+# View service logs
+docker-compose logs ingestor
+docker-compose logs distributor
+docker-compose logs analyzer1
+
+# Check service status
+docker-compose ps
+
+# Restart specific service
+docker-compose restart distributor
 ```
 
 ## Development
 
-### Project Structure
-```
-logs_distributor/
-├── app/
-│   ├── __init__.py
-│   ├── models.py              # Pydantic data models
-│   ├── ingestor.py            # Log ingestion logic
-│   ├── distributor.py         # Log distribution logic
-│   ├── analyzer_stub.py       # Analyzer stub implementation
-│   ├── ingestor_app.py        # Ingestor FastAPI application
-│   └── distributor_app.py     # Distributor FastAPI application
-├── scripts/
-│   ├── start_ingestor.py      # Ingestor startup script
-│   ├── start_distributor.py   # Distributor startup script
-│   ├── start_analyzer_stub.py # Analyzer stub startup script
-│   ├── test_weight_distribution.py # Weight distribution testing
-│   ├── load_test.py           # Performance testing script
-│   ├── monitor_service.py     # Service monitoring script
-│   └── README.md              # Scripts documentation
-├── requirements.txt           # Python dependencies
-└── README.md
-```
-
-### Running in Development Mode
-```bash
-# Terminal 1 - Ingestor with auto-reload
-export INGESTOR_RELOAD=true
-source venv/bin/activate && PYTHONPATH=. python scripts/start_ingestor.py
-
-# Terminal 2 - Distributor with auto-reload
-export DISTRIBUTOR_RELOAD=true
-source venv/bin/activate && PYTHONPATH=. python scripts/start_distributor.py
-
-# Terminal 3 - Analyzer stub
-source venv/bin/activate && PYTHONPATH=. python scripts/start_analyzer_stub.py --id analyzer1 --name analyzer1 --port 9001
-```
-
-## Monitoring
-
-The service includes built-in logging and health checks:
-
-- Application logs are written to stdout
-- Health endpoint at `/health` for all services
-- Redis connection status monitoring
-- HTTP distribution success/failure tracking
-- Analyzer health monitoring with automatic status updates
-- Weight-based distribution statistics
-
-## Scaling
-
-The service is designed to be horizontally scalable:
-
-- Stateless design allows multiple instances
-- Redis provides shared storage
-- Async processing handles high throughput
-- Configurable timeouts and retries
-- Weight-based load distribution across analyzers
-- Automatic health monitoring and failover
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+### Adding New Features
+1. Modify the appropriate service in `app/`
+2. Update tests in `tests/`
+3. Test with load tests
+4. Update documentation
 
 ## License
 
-[Add your license here]
+This project is open source and available under the MIT License.
